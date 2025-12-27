@@ -28,6 +28,16 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", "0"))
 REPO_PATH = os.getenv("REPO_PATH", "/root/memoryBase")
 
+# Load prompt template
+SCRIPT_DIR = Path(__file__).parent
+PROMPT_FILE = SCRIPT_DIR / "prompt.txt"
+
+def load_prompt_template() -> str:
+    """Load prompt template from file."""
+    if PROMPT_FILE.exists():
+        return PROMPT_FILE.read_text(encoding="utf-8")
+    return ""
+
 # OpenAI client for Whisper
 whisper_client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
@@ -46,48 +56,22 @@ async def analyze_with_claude(text: str, edit_instructions: str = None) -> dict:
 
     edit_part = ""
     if edit_instructions:
-        edit_part = f"""
-ВАЖНО: Пользователь попросил изменить предыдущий анализ:
+        edit_part = f"""ВАЖНО: Пользователь попросил изменить предыдущий анализ:
 "{edit_instructions}"
 
-Учти эти изменения при формировании ответа.
-"""
+Учти эти изменения при формировании ответа."""
 
-    prompt = f"""Ты помощник для организации базы знаний. Проанализируй текст и определи куда его сохранить.
+    # Load prompt from file
+    prompt_template = load_prompt_template()
 
-Доступные папки:
-- daily/{datetime.now().strftime("%Y/%m")}/{datetime.now().strftime("%d")}.md — ежедневные записи
-- projects/{{project_name}}/log.md — логи проектов
-- notes/{{название}}.md — отдельные заметки
-- ideas/{{название}}.md — идеи
-- people/{{имя}}.md — заметки о людях
-- books-manga/{{название}}.md — про книги и мангу
-
-Правила:
-1. Если это про день/что делал — в daily
-2. Если упоминается проект — добавить и в daily, и в projects/{{project}}/log.md
-3. Если про человека — добавить и в основную категорию, и в people/
-4. Одна запись может идти в несколько мест (cross-linking)
-{edit_part}
-Текст для анализа:
-"{text}"
-
-Ответь в формате JSON:
-{{
-    "actions": [
-        {{
-            "file": "путь/к/файлу.md",
-            "action": "append" или "create",
-            "content": "что добавить (с форматированием markdown)",
-            "description": "краткое описание для пользователя"
-        }}
-    ],
-    "summary": "краткое описание что будет сделано (1-2 предложения на русском)"
-}}
-
-Дата сегодня: {today}
-Время: {time_now}
-Добавляй временные метки в daily записи."""
+    # Replace placeholders
+    prompt = prompt_template.replace("{TEXT}", text)
+    prompt = prompt.replace("{DATE}", today)
+    prompt = prompt.replace("{TIME}", time_now)
+    prompt = prompt.replace("{YYYY}", datetime.now().strftime("%Y"))
+    prompt = prompt.replace("{MM}", datetime.now().strftime("%m"))
+    prompt = prompt.replace("{DD}", datetime.now().strftime("%d"))
+    prompt = prompt.replace("{EDIT_INSTRUCTIONS}", edit_part)
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
