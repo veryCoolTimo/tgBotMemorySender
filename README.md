@@ -10,6 +10,7 @@
 - Показывает план с файлами и спрашивает подтверждение
 - Кнопка "Изменить" — можно скорректировать голосом или текстом
 - После подтверждения — коммитит и пушит в git
+- **API для MCP**: принимает insights от Claude Code через HTTP
 
 ## Структура
 
@@ -90,6 +91,8 @@ nano .env
 - `OPENROUTER_API_KEY` — https://openrouter.ai/keys
 - `OPENAI_API_KEY` — https://platform.openai.com/api-keys
 - `REPO_PATH` — полный путь к репозиторию базы знаний
+- `API_PORT` — порт для API (по умолчанию 8585)
+- `API_SECRET` — секретный ключ для API (опционально)
 
 ### 5. Запустить бота
 
@@ -165,6 +168,38 @@ journalctl -u memorybot -f
 # screen
 screen -r memorybot
 ```
+
+## API для MCP
+
+Бот также запускает HTTP API сервер для приёма insights от MCP.
+
+### Endpoints
+
+- `POST /api/insight` — принять insight
+- `GET /health` — проверка работы
+
+### Формат запроса
+
+```json
+{
+  "type": "feature|bugfix|plan|idea|decision|learning",
+  "project": "project-name",
+  "summary": "Краткое описание",
+  "description": "Подробное описание",
+  "files_changed": ["file1.py", "file2.py"]
+}
+```
+
+### Заголовки
+
+- `Authorization: Bearer YOUR_API_SECRET` (если настроен API_SECRET)
+
+### Как это работает
+
+1. Claude Code вызывает `log_insight` через MCP
+2. MCP отправляет HTTP запрос на сервер
+3. Бот отправляет уведомление в Telegram с кнопками [Да] [Изменить] [Нет]
+4. При подтверждении — анализирует и сохраняет в memoryBase
 
 ## Лицензия
 

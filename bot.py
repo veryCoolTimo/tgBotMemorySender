@@ -3,9 +3,10 @@ import asyncio
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from aiohttp import web
 
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -27,6 +28,8 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", "0"))
 REPO_PATH = os.getenv("REPO_PATH", "/root/memoryBase")
+API_PORT = int(os.getenv("API_PORT", "8585"))
+API_SECRET = os.getenv("API_SECRET", "")  # Optional secret for API auth
 
 # Load prompt template
 SCRIPT_DIR = Path(__file__).parent
@@ -44,9 +47,109 @@ whisper_client = openai.OpenAI(api_key=OPENAI_API_KEY)
 # Pending actions storage (in-memory, per session)
 pending_actions = {}
 
+# Pending insights from MCP
+pending_insights = {}
+
 # User state for edit mode
 user_states = {}
 
+# Telegram bot instance for API use
+bot_instance: Bot = None
+
+
+# ============== API HANDLERS ==============
+
+async def handle_insight_api(request):
+    """Handle POST /api/insight from MCP."""
+    global bot_instance
+
+    # Check secret if configured
+    if API_SECRET:
+        auth = request.headers.get("Authorization", "")
+        if auth != f"Bearer {API_SECRET}":
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
+    try:
+        data = await request.json()
+    except:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    # Validate required fields
+    required = ["type", "project", "summary"]
+    for field in required:
+        if field not in data:
+            return web.json_response({"error": f"Missing field: {field}"}, status=400)
+
+    # Create insight record
+    insight_id = datetime.now().strftime("%Y%m%d%H%M%S")
+    insight = {
+        "id": insight_id,
+        "timestamp": datetime.now().isoformat(),
+        "type": data.get("type"),
+        "project": data.get("project"),
+        "summary": data.get("summary"),
+        "description": data.get("description", ""),
+        "files_changed": data.get("files_changed", []),
+    }
+
+    # Store pending insight
+    pending_insights[insight_id] = insight
+
+    # Format message
+    type_labels = {
+        "feature": "FEATURE",
+        "bugfix": "BUGFIX",
+        "plan": "PLAN",
+        "idea": "IDEA",
+        "decision": "DECISION",
+        "learning": "LEARNING",
+    }
+    label = type_labels.get(insight["type"], "INFO")
+
+    files_text = ""
+    if insight["files_changed"]:
+        files_text = "\n\nФайлы:\n" + "\n".join([f"  - {f}" for f in insight["files_changed"]])
+
+    message = f"""[{label}] {insight["project"]}
+
+{insight["summary"]}
+
+{insight["description"]}{files_text}
+
+Добавить в базу знаний?"""
+
+    # Send to Telegram with buttons
+    keyboard = [
+        [
+            InlineKeyboardButton("Да", callback_data=f"insight_confirm:{insight_id}"),
+            InlineKeyboardButton("Изменить", callback_data=f"insight_edit:{insight_id}"),
+            InlineKeyboardButton("Нет", callback_data=f"insight_cancel:{insight_id}"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        await bot_instance.send_message(
+            chat_id=ALLOWED_USER_ID,
+            text=message,
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        return web.json_response({"error": f"Telegram error: {str(e)}"}, status=500)
+
+    return web.json_response({
+        "success": True,
+        "insight_id": insight_id,
+        "message": "Insight sent to Telegram"
+    })
+
+
+async def handle_health(request):
+    """Health check endpoint."""
+    return web.json_response({"status": "ok"})
+
+
+# ============== TELEGRAM HANDLERS ==============
 
 async def analyze_with_claude(text: str, edit_instructions: str = None) -> dict:
     """Analyze text with Claude via OpenRouter and decide where to put it."""
@@ -177,7 +280,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Привет! Отправь мне текст или голосовое сообщение, "
-        "и я помогу сохранить это в базу знаний."
+        "и я помогу сохранить это в базу знаний.\n\n"
+        "Также я принимаю insights от Claude через API."
     )
 
 
@@ -189,8 +293,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
 
+    # Check if user is in edit mode for insight
+    state = user_states.get(user_id)
+    if state and state.startswith("insight_editing:"):
+        insight_id = state.split(":")[1]
+        await handle_insight_edit_input(update, context, insight_id, text)
+        return
+
     # Check if user is in edit mode
-    if user_states.get(user_id) == "editing":
+    if state == "editing":
         await handle_edit_input(update, context, text)
         return
 
@@ -204,8 +315,26 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
 
+    # Check if user is in edit mode for insight
+    state = user_states.get(user_id)
+    if state and state.startswith("insight_editing:"):
+        insight_id = state.split(":")[1]
+        status_msg = await update.message.reply_text("Транскрибирую...")
+
+        voice = update.message.voice
+        file = await context.bot.get_file(voice.file_id)
+
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            await file.download_to_drive(tmp.name)
+            text = await transcribe_voice(tmp.name)
+            os.unlink(tmp.name)
+
+        await status_msg.edit_text(f"Транскрипт: {text}")
+        await handle_insight_edit_input(update, context, insight_id, text)
+        return
+
     # Check if user is in edit mode
-    if user_states.get(user_id) == "editing":
+    if state == "editing":
         # Transcribe and use as edit instructions
         status_msg = await update.message.reply_text("Транскрибирую...")
 
@@ -237,6 +366,53 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await status_msg.edit_text(f"Транскрипт:\n\n{text}")
 
     await process_input(update, context, text)
+
+
+async def handle_insight_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE, insight_id: str, edit_text: str):
+    """Handle edit instructions for insight."""
+    user_id = update.effective_user.id
+    insight = pending_insights.get(insight_id)
+
+    if not insight:
+        user_states[user_id] = None
+        await update.message.reply_text("Insight не найден.")
+        return
+
+    # Clear edit mode
+    user_states[user_id] = None
+
+    # Update insight description with edit
+    insight["description"] = f"{insight['description']}\n\n[Изменено]: {edit_text}"
+
+    # Re-send with buttons
+    type_labels = {
+        "feature": "FEATURE",
+        "bugfix": "BUGFIX",
+        "plan": "PLAN",
+        "idea": "IDEA",
+        "decision": "DECISION",
+        "learning": "LEARNING",
+    }
+    label = type_labels.get(insight["type"], "INFO")
+
+    message = f"""[{label}] {insight["project"]}
+
+{insight["summary"]}
+
+{insight["description"]}
+
+Добавить в базу знаний?"""
+
+    keyboard = [
+        [
+            InlineKeyboardButton("Да", callback_data=f"insight_confirm:{insight_id}"),
+            InlineKeyboardButton("Изменить", callback_data=f"insight_edit:{insight_id}"),
+            InlineKeyboardButton("Нет", callback_data=f"insight_cancel:{insight_id}"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(message, reply_markup=reply_markup)
 
 
 async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE, edit_text: str):
@@ -332,7 +508,57 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id != ALLOWED_USER_ID:
         return
 
-    if query.data == "confirm":
+    data = query.data
+
+    # Handle insight callbacks
+    if data.startswith("insight_"):
+        action, insight_id = data.split(":", 1)
+        insight = pending_insights.get(insight_id)
+
+        if not insight:
+            await query.edit_message_text("Insight не найден или уже обработан.")
+            return
+
+        if action == "insight_confirm":
+            # Analyze insight and add to memoryBase
+            text = f"""[{insight['type'].upper()}] {insight['project']}
+
+{insight['summary']}
+
+{insight['description']}"""
+
+            analysis = await analyze_with_claude(text)
+
+            if analysis.get("actions"):
+                apply_actions(analysis["actions"])
+                today = datetime.now().strftime("%Y-%m-%d")
+                success = git_commit_and_push(f"{today}: insight from Claude - {insight['summary'][:50]}")
+
+                if success:
+                    files = "\n".join([f"  - {a['file']}" for a in analysis["actions"]])
+                    await query.edit_message_text(f"Insight сохранён и запушен!\n\nФайлы:\n{files}")
+                else:
+                    await query.edit_message_text("Сохранено локально, но не удалось запушить.")
+            else:
+                await query.edit_message_text("Не удалось проанализировать insight.")
+
+            del pending_insights[insight_id]
+
+        elif action == "insight_edit":
+            user_states[user_id] = f"insight_editing:{insight_id}"
+            current_text = query.message.text
+            await query.edit_message_text(
+                f"{current_text}\n\n---\nЧто изменить? (текст или голосовое)"
+            )
+
+        elif action == "insight_cancel":
+            del pending_insights[insight_id]
+            await query.edit_message_text("Insight отменён.")
+
+        return
+
+    # Handle regular callbacks
+    if data == "confirm":
         pending = pending_actions.get(user_id)
         if not pending:
             await query.edit_message_text("Нет ожидающих действий.")
@@ -354,7 +580,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         del pending_actions[user_id]
 
-    elif query.data == "edit":
+    elif data == "edit":
         # Enter edit mode
         user_states[user_id] = "editing"
         # Keep context visible, append edit prompt
@@ -363,30 +589,58 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{current_text}\n\n---\nЧто изменить? (текст или голосовое)"
         )
 
-    elif query.data == "cancel":
+    elif data == "cancel":
         if user_id in pending_actions:
             del pending_actions[user_id]
         user_states[user_id] = None
         await query.edit_message_text("Отменено.")
 
 
-def main():
-    """Start the bot."""
+async def run_api_server(app: web.Application):
+    """Run the API server."""
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", API_PORT)
+    await site.start()
+    print(f"API server running on port {API_PORT}")
+
+
+async def main():
+    """Start both Telegram bot and API server."""
+    global bot_instance
+
     if not all([TELEGRAM_TOKEN, OPENROUTER_API_KEY, OPENAI_API_KEY, ALLOWED_USER_ID]):
         print("Error: Missing environment variables")
         print("Required: TELEGRAM_TOKEN, OPENROUTER_API_KEY, OPENAI_API_KEY, ALLOWED_USER_ID")
         return
 
+    # Create Telegram application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
+    bot_instance = application.bot
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_handler(CallbackQueryHandler(handle_callback))
 
+    # Create API app
+    api_app = web.Application()
+    api_app.router.add_post("/api/insight", handle_insight_api)
+    api_app.router.add_get("/health", handle_health)
+
     print(f"Bot started. Repo path: {REPO_PATH}")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    print(f"API endpoint: http://0.0.0.0:{API_PORT}/api/insight")
+
+    # Run both
+    async with application:
+        await application.start()
+        await run_api_server(api_app)
+        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+        # Keep running
+        while True:
+            await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
