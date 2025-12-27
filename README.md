@@ -2,50 +2,76 @@
 
 Бот для добавления записей в базу знаний через Telegram.
 
+## Возможности
+
+- Отправляй текст или голосовые сообщения
+- Бот транскрибирует голосовые через Whisper
+- Анализирует через Claude (OpenRouter) куда сохранить
+- Показывает план с файлами и спрашивает подтверждение
+- Кнопка "Изменить" — можно скорректировать голосом или текстом
+- После подтверждения — коммитит и пушит в git
+
+## Структура
+
+```
+tg-bot/
+├── bot.py           # Основной код
+├── prompt.txt       # Промт для ИИ (редактируй под себя)
+├── .env             # Токены и настройки
+├── .env.example     # Пример .env
+└── requirements.txt # Зависимости
+```
+
+## Кастомизация промта
+
+Редактируй `prompt.txt` под свои правила. Доступные плейсхолдеры:
+
+| Плейсхолдер | Описание |
+|-------------|----------|
+| `{TEXT}` | Текст пользователя |
+| `{DATE}` | Дата (2025-12-27) |
+| `{TIME}` | Время (14:30) |
+| `{YYYY}` | Год |
+| `{MM}` | Месяц |
+| `{DD}` | День |
+| `{EDIT_INSTRUCTIONS}` | Инструкции для редактирования |
+
 ## Архитектура
 
 На сервере 2 отдельных репозитория:
 
 ```
-/root/
-├── tg-bot/           ← этот репо (код бота)
-│   └── git: tgBotMemorySender.git
+~/
+├── tg-bot/           <- этот репо (код бота)
 │
-└── memoryBase/       ← база знаний (куда бот пишет)
-    └── git: memoryBase.git
+└── memoryBase/       <- база знаний (куда бот пишет)
 ```
 
 Бот читает `REPO_PATH` из `.env` и пушит изменения туда.
 
-## Как работает
-
-1. Отправляешь текст или голосовое сообщение
-2. Бот транскрибирует (если голосовое) через Whisper
-3. Анализирует через Claude (OpenRouter) куда сохранить
-4. Показывает план и спрашивает подтверждение
-5. После "Да" — сохраняет в файлы и пушит в git (memoryBase)
-
 ## Деплой на сервер
 
-### 1. Клонировать репозиторий memoryBase (база знаний)
+### 1. Клонировать репозиторий базы знаний
 
 ```bash
-cd /root
-git clone git@github.com:veryCoolTimo/memoryBase.git
+cd ~
+git clone git@github.com:YOUR_USERNAME/memoryBase.git
 cd memoryBase
+git config user.email "bot@memorybase.local"
+git config user.name "MemoryBase Bot"
 ```
 
 ### 2. Клонировать репозиторий бота
 
 ```bash
-cd /root
-git clone git@github.com:veryCoolTimo/tgBotMemorySender.git tg-bot
+cd ~
+git clone git@github.com:YOUR_USERNAME/tgBotMemorySender.git tg-bot
 ```
 
 ### 3. Настроить окружение
 
 ```bash
-cd /root/tg-bot
+cd ~/tg-bot
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -63,23 +89,15 @@ nano .env
 - `ALLOWED_USER_ID` — твой Telegram ID (узнать у @userinfobot)
 - `OPENROUTER_API_KEY` — https://openrouter.ai/keys
 - `OPENAI_API_KEY` — https://platform.openai.com/api-keys
-- `REPO_PATH` — путь к репозиторию (по умолчанию /root/memoryBase)
+- `REPO_PATH` — полный путь к репозиторию базы знаний
 
-### 5. Настроить git на сервере
-
-```bash
-cd /root/memoryBase
-git config user.email "bot@memorybase.local"
-git config user.name "MemoryBase Bot"
-```
-
-### 6. Запустить бота
+### 5. Запустить бота
 
 #### Вариант A: screen (простой)
 
 ```bash
 screen -S memorybot
-cd /root/tg-bot
+cd ~/tg-bot
 source venv/bin/activate
 python bot.py
 # Ctrl+A, D для выхода из screen
@@ -98,10 +116,10 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/tg-bot
-Environment=PATH=/root/tg-bot/venv/bin
-ExecStart=/root/tg-bot/venv/bin/python bot.py
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/tg-bot
+Environment=PATH=/home/YOUR_USER/tg-bot/venv/bin
+ExecStart=/home/YOUR_USER/tg-bot/venv/bin/python bot.py
 Restart=always
 RestartSec=10
 
@@ -118,10 +136,25 @@ sudo systemctl status memorybot
 
 ## Использование
 
-- Отправь текст → бот предложит куда сохранить
-- Отправь голосовое → бот транскрибирует и предложит куда сохранить
-- Нажми "Да" → сохранено и запушено в git
-- Нажми "Нет" → отменено
+1. Отправь текст или голосовое
+2. Бот покажет куда сохранит:
+   ```
+   Запись будет добавлена в ежедневник и лог проекта.
+
+   Файлы для записи:
+     - daily/2025/12/27.md
+     - projects/MyProject/log.md
+
+   Что будет добавлено:
+   - Запись о работе над проектом
+   - Лог в проект
+
+   Сохранить?
+   [Да] [Изменить] [Нет]
+   ```
+3. `Да` — сохранить и запушить
+4. `Изменить` — скорректировать голосом или текстом
+5. `Нет` — отменить
 
 ## Логи
 
@@ -132,3 +165,7 @@ journalctl -u memorybot -f
 # screen
 screen -r memorybot
 ```
+
+## Лицензия
+
+MIT
