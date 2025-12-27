@@ -73,6 +73,9 @@ async def analyze_with_claude(text: str, edit_instructions: str = None) -> dict:
     prompt = prompt.replace("{DD}", datetime.now().strftime("%d"))
     prompt = prompt.replace("{EDIT_INSTRUCTIONS}", edit_part)
 
+    # Use faster model for edits, main model for initial analysis
+    model = "google/gemini-2.5-flash-preview" if edit_instructions else "anthropic/claude-sonnet-4"
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -81,7 +84,7 @@ async def analyze_with_claude(text: str, edit_instructions: str = None) -> dict:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "anthropic/claude-sonnet-4",
+                "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
             },
