@@ -220,6 +220,20 @@ async def transcribe_voice(file_path: str) -> str:
     return transcript.text
 
 
+def git_pull() -> bool:
+    """Pull latest changes before writing files."""
+    try:
+        subprocess.run(
+            ["git", "pull", "--rebase", "origin", "main"],
+            cwd=REPO_PATH,
+            check=True,
+            capture_output=True
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
 def apply_actions(actions: list) -> bool:
     """Apply file actions to the repository."""
     repo = Path(REPO_PATH)
@@ -241,13 +255,6 @@ def apply_actions(actions: list) -> bool:
 def git_commit_and_push(message: str) -> bool:
     """Commit and push changes."""
     try:
-        # Pull latest changes first to avoid conflicts
-        subprocess.run(
-            ["git", "pull", "--rebase", "origin", "main"],
-            cwd=REPO_PATH,
-            check=True,
-            capture_output=True
-        )
         subprocess.run(["git", "add", "-A"], cwd=REPO_PATH, check=True)
         subprocess.run(
             ["git", "commit", "-m", message],
@@ -530,6 +537,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             actions = insight.get("actions", [])
 
             if actions:
+                git_pull()  # Pull before writing files
                 apply_actions(actions)
                 today = datetime.now().strftime("%Y-%m-%d")
                 success = git_commit_and_push(f"{today}: insight from Claude - {insight['summary'][:50]}")
@@ -564,10 +572,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Нет ожидающих действий.")
             return
 
-        # Apply actions
+        # Pull, apply actions, commit and push
+        git_pull()  # Pull before writing files
         apply_actions(pending["actions"])
 
-        # Commit and push
         today = datetime.now().strftime("%Y-%m-%d")
         success = git_commit_and_push(f"{today}: добавлено через Telegram")
 
