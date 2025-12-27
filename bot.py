@@ -82,7 +82,36 @@ async def handle_insight_api(request):
 
     # Create insight record
     insight_id = datetime.now().strftime("%Y%m%d%H%M%S")
-    insight = {
+
+    # Format text for Claude analysis (same as regular messages)
+    insight_text = f"""[{data.get('type', 'info').upper()}] {data.get('project', 'unknown')}
+
+{data.get('summary', '')}
+
+{data.get('description', '')}"""
+
+    # Send "analyzing" message first
+    try:
+        status_msg = await bot_instance.send_message(
+            chat_id=ALLOWED_USER_ID,
+            text="Анализирую insight от Claude..."
+        )
+    except Exception as e:
+        return web.json_response({"error": f"Telegram error: {str(e)}"}, status=500)
+
+    # Analyze with Claude (same as regular messages)
+    analysis = await analyze_with_claude(insight_text)
+
+    if not analysis.get("actions"):
+        await bot_instance.edit_message_text(
+            chat_id=ALLOWED_USER_ID,
+            message_id=status_msg.message_id,
+            text="Не удалось проанализировать insight."
+        )
+        return web.json_response({"error": "Analysis failed"}, status=500)
+
+    # Store pending insight with pre-analyzed actions
+    pending_insights[insight_id] = {
         "id": insight_id,
         "timestamp": datetime.now().isoformat(),
         "type": data.get("type"),
@@ -90,35 +119,11 @@ async def handle_insight_api(request):
         "summary": data.get("summary"),
         "description": data.get("description", ""),
         "files_changed": data.get("files_changed", []),
+        "original_text": insight_text,
+        "actions": analysis["actions"],
     }
 
-    # Store pending insight
-    pending_insights[insight_id] = insight
-
-    # Format message
-    type_labels = {
-        "feature": "FEATURE",
-        "bugfix": "BUGFIX",
-        "plan": "PLAN",
-        "idea": "IDEA",
-        "decision": "DECISION",
-        "learning": "LEARNING",
-    }
-    label = type_labels.get(insight["type"], "INFO")
-
-    files_text = ""
-    if insight["files_changed"]:
-        files_text = "\n\nФайлы:\n" + "\n".join([f"  - {f}" for f in insight["files_changed"]])
-
-    message = f"""[{label}] {insight["project"]}
-
-{insight["summary"]}
-
-{insight["description"]}{files_text}
-
-Добавить в базу знаний?"""
-
-    # Send to Telegram with buttons
+    # Format message same as regular flow
     keyboard = [
         [
             InlineKeyboardButton("Да", callback_data=f"insight_confirm:{insight_id}"),
@@ -128,14 +133,12 @@ async def handle_insight_api(request):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    try:
-        await bot_instance.send_message(
-            chat_id=ALLOWED_USER_ID,
-            text=message,
-            reply_markup=reply_markup
-        )
-    except Exception as e:
-        return web.json_response({"error": f"Telegram error: {str(e)}"}, status=500)
+    await bot_instance.edit_message_text(
+        chat_id=ALLOWED_USER_ID,
+        message_id=status_msg.message_id,
+        text=format_analysis_message(analysis),
+        reply_markup=reply_markup
+    )
 
     return web.json_response({
         "success": True,
@@ -381,28 +384,21 @@ async def handle_insight_edit_input(update: Update, context: ContextTypes.DEFAUL
     # Clear edit mode
     user_states[user_id] = None
 
-    # Update insight description with edit
-    insight["description"] = f"{insight['description']}\n\n[Изменено]: {edit_text}"
+    # Send analyzing message
+    status_msg = await update.message.reply_text("Анализирую с учётом изменений...")
 
-    # Re-send with buttons
-    type_labels = {
-        "feature": "FEATURE",
-        "bugfix": "BUGFIX",
-        "plan": "PLAN",
-        "idea": "IDEA",
-        "decision": "DECISION",
-        "learning": "LEARNING",
-    }
-    label = type_labels.get(insight["type"], "INFO")
+    # Re-analyze with edit instructions (same as regular edit flow)
+    original_text = insight.get("original_text", "")
+    analysis = await analyze_with_claude(original_text, edit_text)
 
-    message = f"""[{label}] {insight["project"]}
+    if not analysis.get("actions"):
+        await status_msg.edit_text("Не удалось обработать изменения.")
+        return
 
-{insight["summary"]}
+    # Update insight with new actions
+    insight["actions"] = analysis["actions"]
 
-{insight["description"]}
-
-Добавить в базу знаний?"""
-
+    # Format message same as regular flow
     keyboard = [
         [
             InlineKeyboardButton("Да", callback_data=f"insight_confirm:{insight_id}"),
@@ -412,7 +408,10 @@ async def handle_insight_edit_input(update: Update, context: ContextTypes.DEFAUL
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(message, reply_markup=reply_markup)
+    await status_msg.edit_text(
+        format_analysis_message(analysis),
+        reply_markup=reply_markup
+    )
 
 
 async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE, edit_text: str):
@@ -520,27 +519,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if action == "insight_confirm":
-            # Analyze insight and add to memoryBase
-            text = f"""[{insight['type'].upper()}] {insight['project']}
+            # Use pre-analyzed actions (already analyzed when insight arrived)
+            actions = insight.get("actions", [])
 
-{insight['summary']}
-
-{insight['description']}"""
-
-            analysis = await analyze_with_claude(text)
-
-            if analysis.get("actions"):
-                apply_actions(analysis["actions"])
+            if actions:
+                apply_actions(actions)
                 today = datetime.now().strftime("%Y-%m-%d")
                 success = git_commit_and_push(f"{today}: insight from Claude - {insight['summary'][:50]}")
 
                 if success:
-                    files = "\n".join([f"  - {a['file']}" for a in analysis["actions"]])
-                    await query.edit_message_text(f"Insight сохранён и запушен!\n\nФайлы:\n{files}")
+                    files = "\n".join([f"  - {a['file']}" for a in actions])
+                    await query.edit_message_text(f"Сохранено и запушено!\n\nФайлы:\n{files}")
                 else:
                     await query.edit_message_text("Сохранено локально, но не удалось запушить.")
             else:
-                await query.edit_message_text("Не удалось проанализировать insight.")
+                await query.edit_message_text("Нет действий для выполнения.")
 
             del pending_insights[insight_id]
 
