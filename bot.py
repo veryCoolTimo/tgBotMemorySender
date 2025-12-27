@@ -370,8 +370,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "edit":
         # Enter edit mode
         user_states[user_id] = "editing"
+        # Keep context visible, append edit prompt
+        current_text = query.message.text
         await query.edit_message_text(
-            "Опишите что нужно изменить (текстом или голосовым сообщением):"
+            f"{current_text}\n\n---\nЧто изменить? (текст или голосовое)"
         )
 
     elif query.data == "cancel":
