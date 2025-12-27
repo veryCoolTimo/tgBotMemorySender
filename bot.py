@@ -241,6 +241,13 @@ def apply_actions(actions: list) -> bool:
 def git_commit_and_push(message: str) -> bool:
     """Commit and push changes."""
     try:
+        # Pull latest changes first to avoid conflicts
+        subprocess.run(
+            ["git", "pull", "--rebase", "origin", "main"],
+            cwd=REPO_PATH,
+            check=True,
+            capture_output=True
+        )
         subprocess.run(["git", "add", "-A"], cwd=REPO_PATH, check=True)
         subprocess.run(
             ["git", "commit", "-m", message],
