@@ -166,17 +166,17 @@ def format_analysis_message(analysis: dict) -> str:
     actions = analysis.get("actions", [])
 
     # Group files
-    files_list = "\n".join([f"  📄 {a['file']}" for a in actions])
+    files_list = "\n".join([f"  - {a['file']}" for a in actions])
 
     # Details
-    details = "\n".join([f"• {a['description']}" for a in actions])
+    details = "\n".join([f"- {a['description']}" for a in actions])
 
-    return f"""📝 {summary}
+    return f"""{summary}
 
-📁 Файлы для записи:
+Файлы для записи:
 {files_list}
 
-📋 Что будет добавлено:
+Что будет добавлено:
 {details}
 
 Сохранить?"""
@@ -189,7 +189,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "👋 Привет! Отправь мне текст или голосовое сообщение, "
+        "Привет! Отправь мне текст или голосовое сообщение, "
         "и я помогу сохранить это в базу знаний."
     )
 
@@ -220,7 +220,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check if user is in edit mode
     if user_states.get(user_id) == "editing":
         # Transcribe and use as edit instructions
-        status_msg = await update.message.reply_text("🎤 Транскрибирую...")
+        status_msg = await update.message.reply_text("Транскрибирую...")
 
         voice = update.message.voice
         file = await context.bot.get_file(voice.file_id)
@@ -230,12 +230,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = await transcribe_voice(tmp.name)
             os.unlink(tmp.name)
 
-        await status_msg.edit_text(f"🎤 Транскрипт: {text}")
+        await status_msg.edit_text(f"Транскрипт: {text}")
         await handle_edit_input(update, context, text)
         return
 
     # Normal voice processing
-    status_msg = await update.message.reply_text("🎤 Транскрибирую голосовое...")
+    status_msg = await update.message.reply_text("Транскрибирую голосовое...")
 
     # Download voice file
     voice = update.message.voice
@@ -247,7 +247,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.unlink(tmp.name)
 
     # Edit the status message with transcript
-    await status_msg.edit_text(f"🎤 Транскрипт:\n\n{text}")
+    await status_msg.edit_text(f"Транскрипт:\n\n{text}")
 
     await process_input(update, context, text)
 
@@ -259,20 +259,20 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     if not pending:
         user_states[user_id] = None
-        await update.message.reply_text("❌ Нет ожидающих действий для редактирования.")
+        await update.message.reply_text("Нет ожидающих действий для редактирования.")
         return
 
     # Clear edit mode
     user_states[user_id] = None
 
     # Send analyzing message
-    status_msg = await update.message.reply_text("🔄 Анализирую с учётом изменений...")
+    status_msg = await update.message.reply_text("Анализирую с учётом изменений...")
 
     # Re-analyze with edit instructions
     analysis = await analyze_with_claude(pending["original_text"], edit_text)
 
     if not analysis.get("actions"):
-        await status_msg.edit_text("❌ Не удалось обработать изменения.")
+        await status_msg.edit_text("Не удалось обработать изменения.")
         return
 
     # Update pending actions
@@ -285,9 +285,9 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     # Format and show updated analysis
     keyboard = [
         [
-            InlineKeyboardButton("✅ Да", callback_data="confirm"),
-            InlineKeyboardButton("✏️ Изменить", callback_data="edit"),
-            InlineKeyboardButton("❌ Нет", callback_data="cancel"),
+            InlineKeyboardButton("Да", callback_data="confirm"),
+            InlineKeyboardButton("Изменить", callback_data="edit"),
+            InlineKeyboardButton("Нет", callback_data="cancel"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -301,13 +301,13 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 async def process_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     """Process input text and ask for confirmation."""
     # Send analyzing message
-    status_msg = await update.message.reply_text("🔄 Анализирую...")
+    status_msg = await update.message.reply_text("Анализирую...")
 
     # Analyze with Claude
     analysis = await analyze_with_claude(text)
 
     if not analysis.get("actions"):
-        await status_msg.edit_text("❌ Не удалось определить куда сохранить.")
+        await status_msg.edit_text("Не удалось определить куда сохранить.")
         return
 
     # Store pending action
@@ -321,9 +321,9 @@ async def process_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text
     # Format response with buttons
     keyboard = [
         [
-            InlineKeyboardButton("✅ Да", callback_data="confirm"),
-            InlineKeyboardButton("✏️ Изменить", callback_data="edit"),
-            InlineKeyboardButton("❌ Нет", callback_data="cancel"),
+            InlineKeyboardButton("Да", callback_data="confirm"),
+            InlineKeyboardButton("Изменить", callback_data="edit"),
+            InlineKeyboardButton("Нет", callback_data="cancel"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -348,7 +348,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "confirm":
         pending = pending_actions.get(user_id)
         if not pending:
-            await query.edit_message_text("❌ Нет ожидающих действий.")
+            await query.edit_message_text("Нет ожидающих действий.")
             return
 
         # Apply actions
@@ -360,10 +360,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if success:
             # Format saved files list
-            files = "\n".join([f"  ✅ {a['file']}" for a in pending["actions"]])
-            await query.edit_message_text(f"✅ Сохранено и запушено!\n\n📁 Файлы:\n{files}")
+            files = "\n".join([f"  - {a['file']}" for a in pending["actions"]])
+            await query.edit_message_text(f"Сохранено и запушено!\n\nФайлы:\n{files}")
         else:
-            await query.edit_message_text("⚠️ Сохранено локально, но не удалось запушить в git.")
+            await query.edit_message_text("Сохранено локально, но не удалось запушить в git.")
 
         del pending_actions[user_id]
 
@@ -371,14 +371,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Enter edit mode
         user_states[user_id] = "editing"
         await query.edit_message_text(
-            "✏️ Опишите что нужно изменить (текстом или голосовым сообщением):"
+            "Опишите что нужно изменить (текстом или голосовым сообщением):"
         )
 
     elif query.data == "cancel":
         if user_id in pending_actions:
             del pending_actions[user_id]
         user_states[user_id] = None
-        await query.edit_message_text("❌ Отменено.")
+        await query.edit_message_text("Отменено.")
 
 
 def main():
