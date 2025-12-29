@@ -180,7 +180,7 @@ async def analyze_with_claude(text: str, edit_instructions: str = None) -> dict:
     prompt = prompt.replace("{EDIT_INSTRUCTIONS}", edit_part)
 
     # Use faster model for edits, main model for initial analysis
-    model = "google/gemini-2.0-flash-001" if edit_instructions else "anthropic/claude-sonnet-4"
+    model = "google/gemini-2.5-flash-preview-09-2025" if edit_instructions else "anthropic/claude-sonnet-4"
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
