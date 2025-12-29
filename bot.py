@@ -198,7 +198,19 @@ async def analyze_with_claude(text: str, edit_instructions: str = None) -> dict:
         )
 
         result = response.json()
+
+        # Check for API errors
+        if "error" in result:
+            print(f"[ERROR] OpenRouter API error: {result}")
+            error_msg = result.get('error', {}).get('message', 'Unknown error')
+            return {"actions": [], "summary": f"API Error: {error_msg}"}
+
+        if "choices" not in result:
+            print(f"[ERROR] Unexpected API response (no choices): {result}")
+            return {"actions": [], "summary": "Не удалось получить ответ от AI"}
+
         content = result["choices"][0]["message"]["content"]
+        print(f"[DEBUG] OpenRouter response content: {content[:500]}...")
 
         # Parse JSON from response
         start = content.find("{")
