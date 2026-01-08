@@ -1,9 +1,10 @@
 import os
 import asyncio
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from aiohttp import web
+import pytz
 
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
@@ -30,6 +31,22 @@ ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", "0"))
 REPO_PATH = os.getenv("REPO_PATH", "/root/memoryBase")
 API_PORT = int(os.getenv("API_PORT", "8585"))
 API_SECRET = os.getenv("API_SECRET", "")  # Optional secret for API auth
+
+# Timezone for reminders
+CET = pytz.timezone("Europe/Berlin")
+
+# Reminder times (hour, minute) in CET
+REMINDER_TIMES = [
+    (15, 0),   # 15:00 - lunch/afternoon
+    (19, 0),   # 19:00 - evening
+    (1, 0),    # 01:00 - night
+]
+
+REMINDER_MESSAGE = """Эй, потрать 2 минуты!
+
+Расскажи как прошел день — что делал интересного, что не делал, какие мысли.
+
+Можно голосовым, можно текстом. Просто запиши что-нибудь, чел."""
 
 # Load prompt template
 SCRIPT_DIR = Path(__file__).parent
@@ -150,6 +167,62 @@ async def handle_insight_api(request):
 async def handle_health(request):
     """Health check endpoint."""
     return web.json_response({"status": "ok"})
+
+
+# ============== REMINDER SYSTEM ==============
+
+async def send_reminder():
+    """Send daily reminder message."""
+    global bot_instance
+
+    if not bot_instance:
+        return
+
+    keyboard = [[
+        InlineKeyboardButton("Напомни через час", callback_data="reminder_snooze")
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        await bot_instance.send_message(
+            chat_id=ALLOWED_USER_ID,
+            text=REMINDER_MESSAGE,
+            reply_markup=reply_markup
+        )
+        print(f"[REMINDER] Sent at {datetime.now(CET).strftime('%H:%M')}")
+    except Exception as e:
+        print(f"[ERROR] Failed to send reminder: {e}")
+
+
+async def send_snoozed_reminder():
+    """Send snoozed reminder after 1 hour."""
+    await asyncio.sleep(3600)  # Wait 1 hour
+    await send_reminder()
+
+
+async def reminder_scheduler():
+    """Background task that checks time and sends reminders."""
+    sent_today = set()  # Track which reminders were sent today
+
+    while True:
+        now = datetime.now(CET)
+        current_date = now.date()
+        current_time = (now.hour, now.minute)
+
+        # Reset sent_today at midnight
+        if now.hour == 0 and now.minute == 0:
+            sent_today.clear()
+
+        # Check if it's time to send a reminder
+        for reminder_time in REMINDER_TIMES:
+            reminder_key = (current_date, reminder_time)
+
+            if current_time == reminder_time and reminder_key not in sent_today:
+                await send_reminder()
+                sent_today.add(reminder_key)
+
+        # Check every 30 seconds
+        await asyncio.sleep(30)
 
 
 # ============== TELEGRAM HANDLERS ==============
@@ -577,6 +650,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
+    # Handle reminder snooze
+    if data == "reminder_snooze":
+        await query.edit_message_text(
+            f"{REMINDER_MESSAGE}\n\n---\nОк, напомню через час!"
+        )
+        asyncio.create_task(send_snoozed_reminder())
+        return
+
     # Handle regular callbacks
     if data == "confirm":
         pending = pending_actions.get(user_id)
@@ -650,12 +731,17 @@ async def main():
 
     print(f"Bot started. Repo path: {REPO_PATH}")
     print(f"API endpoint: http://0.0.0.0:{API_PORT}/api/insight")
+    print(f"Reminders scheduled at (CET): {', '.join([f'{h:02d}:{m:02d}' for h, m in REMINDER_TIMES])}")
 
     # Run both
     async with application:
         await application.start()
         await run_api_server(api_app)
         await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+        # Start reminder scheduler
+        asyncio.create_task(reminder_scheduler())
+        print("[REMINDER] Scheduler started")
 
         # Keep running
         while True:
